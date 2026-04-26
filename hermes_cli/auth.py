@@ -310,6 +310,21 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=(),
         base_url_env_var="BEDROCK_BASE_URL",
     ),
+    # Azure OpenAI — each deployment carries its own key, endpoint, and API
+    # version.  This registry entry covers the single-deployment env-var path
+    # (AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT).  Multi-deployment users
+    # configure azure_openai.deployments in config.yaml; resolve_azure_openai_credentials()
+    # reads from there first and falls back to these env vars.
+    "azure-openai": ProviderConfig(
+        id="azure-openai",
+        name="Azure OpenAI",
+        auth_type="api_key",
+        # inference_base_url is not used directly for Azure — the per-deployment
+        # endpoint from AZURE_OPENAI_ENDPOINT or config is always used instead.
+        inference_base_url="",
+        api_key_env_vars=("AZURE_OPENAI_API_KEY",),
+        base_url_env_var="AZURE_OPENAI_ENDPOINT",
+    ),
 }
 
 
@@ -2645,6 +2660,161 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         "base_url": base_url.rstrip("/"),
         "source": key_source or "default",
     }
+
+
+def resolve_azure_openai_credentials(deployment_name: str = "") -> Dict[str, Any]:
+    """Resolve Azure OpenAI credentials for a given deployment.
+
+    Resolution order:
+    1. If *deployment_name* is set, look for a matching entry in
+       ``azure_openai.deployments`` in config.yaml.  Use the deployment's
+       ``api_key_env`` to fetch the key from ``.env``.
+    2. Fall back to the bare ``AZURE_OPENAI_*`` env vars (single-deployment
+       convenience mode).
+
+    Returns a dict with: api_key, endpoint, api_version, deployment_name, source.
+    Raises AuthError if no credentials can be resolved.
+    """
+    from hermes_cli.config import load_config, get_env_value
+
+    _DEFAULT_API_VERSION = "2024-02-01"
+
+    # --- Try config.yaml deployments first ---
+    if deployment_name:
+        try:
+            config = load_config()
+            deployments = config.get("azure_openai", {}).get("deployments", [])
+            for dep in deployments:
+                if dep.get("deployment_name") == deployment_name:
+                    api_key_env = dep.get("api_key_env", "")
+                    api_key = ""
+                    if api_key_env:
+                        api_key = get_env_value(api_key_env) or os.getenv(api_key_env, "")
+                    endpoint = dep.get("endpoint", "").rstrip("/")
+                    api_version = dep.get("api_version", "") or _DEFAULT_API_VERSION
+                    if api_key and endpoint:
+                        return {
+                            "api_key": api_key,
+                            "endpoint": endpoint,
+                            "api_version": api_version,
+                            "deployment_name": deployment_name,
+                            "source": "config",
+                        }
+        except Exception:
+            pass  # fall through to env vars
+
+    # --- Fall back to bare env vars (single-deployment mode) ---
+    from hermes_cli.config import get_env_value
+    api_key = get_env_value("AZURE_OPENAI_API_KEY") or os.getenv("AZURE_OPENAI_API_KEY", "")
+    endpoint = (get_env_value("AZURE_OPENAI_ENDPOINT") or os.getenv("AZURE_OPENAI_ENDPOINT", "")).rstrip("/")
+    api_version = (
+        get_env_value("AZURE_OPENAI_API_VERSION") or os.getenv("AZURE_OPENAI_API_VERSION", "")
+        or _DEFAULT_API_VERSION
+    )
+    resolved_deployment = (
+        deployment_name
+        or get_env_value("AZURE_OPENAI_DEPLOYMENT_NAME")
+        or os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "")
+    )
+
+    if not api_key or not endpoint:
+        raise AuthError(
+            "Azure OpenAI credentials not found. "
+            "Set AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT in ~/.hermes/.env, "
+            "or configure azure_openai.deployments in config.yaml.",
+            provider="azure-openai",
+            code="missing_credentials",
+        )
+
+    return {
+        "api_key": api_key,
+        "endpoint": endpoint,
+        "api_version": api_version,
+        "deployment_name": resolved_deployment,
+        "source": "env",
+    }
+
+
+def fetch_azure_deployment_model(
+    deployment_name: str,
+    endpoint: str,
+    api_key: str,
+    api_version: str = "2024-02-01",
+    timeout: float = 5.0,
+) -> str:
+    """Query the Azure OpenAI REST API for the model backing a deployment.
+
+    Returns the model name string (e.g. "gpt-4o", "gpt-4-turbo") on success,
+    or an empty string if the request fails or the field is absent.
+
+    Azure REST endpoint::
+
+        GET {endpoint}/openai/deployments/{deployment_name}?api-version={version}
+        api-key: {api_key}
+
+    The response JSON contains a ``model`` field at the top level when the
+    deployment exists and the key has read access.
+    """
+    if not deployment_name or not endpoint or not api_key:
+        return ""
+    try:
+        import urllib.request
+        import urllib.error
+        url = (
+            f"{endpoint.rstrip('/')}/openai/deployments/{deployment_name}"
+            f"?api-version={api_version}"
+        )
+        req = urllib.request.Request(
+            url,
+            headers={"api-key": api_key, "Content-Type": "application/json"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            import json as _json
+            data = _json.loads(resp.read().decode())
+            return str(data.get("model") or "").strip()
+    except Exception:
+        return ""
+
+
+def get_azure_deployment_model_cached(
+    deployment_name: str,
+    endpoint: str,
+    api_key: str,
+    api_version: str = "2024-02-01",
+) -> str:
+    """Return the underlying model for an Azure deployment, reading from
+    config cache first.  If not cached, queries the Azure REST API and
+    persists the result to the deployment entry in config.yaml.
+
+    Returns empty string when the model cannot be determined.
+    """
+    if not deployment_name:
+        return ""
+    try:
+        from hermes_cli.config import load_config, save_config
+        config = load_config()
+        deployments = config.get("azure_openai", {}).get("deployments", [])
+        for dep in deployments:
+            if dep.get("deployment_name") == deployment_name:
+                cached = (dep.get("model") or "").strip()
+                if cached:
+                    return cached
+                # Not cached — query the API
+                fetched = fetch_azure_deployment_model(
+                    deployment_name, endpoint, api_key, api_version
+                )
+                if fetched:
+                    dep["model"] = fetched
+                    config.setdefault("azure_openai", {})["deployments"] = deployments
+                    save_config(config)
+                return fetched
+        # Deployment not in config (env-var mode) — query without caching
+        return fetch_azure_deployment_model(
+            deployment_name, endpoint, api_key, api_version
+        )
+    except Exception:
+        return ""
 
 
 def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str, Any]:

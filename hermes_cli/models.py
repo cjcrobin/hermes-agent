@@ -593,6 +593,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
+    ProviderEntry("azure-openai",   "Azure OpenAI",             "Azure OpenAI (per-deployment credentials — deployment name is the model)"),
 ]
 
 # Derived dicts — used throughout the codebase
@@ -660,6 +661,10 @@ _PROVIDER_ALIASES = {
     "nemotron": "nvidia",
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
+    # Azure OpenAI
+    "azure": "azure-openai",
+    "azure_openai": "azure-openai",
+    "aoai": "azure-openai",
 }
 
 

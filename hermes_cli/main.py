@@ -1575,6 +1575,8 @@ def select_provider_and_model(args=None):
         _model_flow_kimi(config, current_model)
     elif selected_provider == "bedrock":
         _model_flow_bedrock(config, current_model)
+    elif selected_provider == "azure-openai":
+        _model_flow_azure_openai(config, current_model)
     elif selected_provider in (
         "gemini",
         "deepseek",
@@ -3743,6 +3745,141 @@ def _model_flow_bedrock(config, current_model=""):
         print(f"  Default model set to: {selected} (via AWS Bedrock, {region})")
     else:
         print("  No change.")
+
+
+def _model_flow_azure_openai(config, current_model=""):
+    """Interactive flow for configuring Azure OpenAI provider.
+
+    Supports both single-deployment (env vars) and multi-deployment
+    (azure_openai.deployments in config.yaml) modes.
+
+    After the user selects or adds a deployment the function writes:
+      model.default      = deployment_name
+      model.provider     = "azure-openai"
+      model.base_url     = endpoint
+      model.api_version  = api_version
+    and stores the API key in ~/.hermes/.env under the deployment-specific
+    env var (AZURE_OPENAI_KEY_<UPPER_NAME>).
+    """
+    from hermes_cli.config import (
+        load_config,
+        save_config,
+        get_env_value,
+        save_env_value,
+    )
+    from hermes_cli.auth import deactivate_provider
+
+    cfg = load_config()
+    azure_cfg = cfg.setdefault("azure_openai", {})
+    deployments: list = azure_cfg.get("deployments", [])
+    if not isinstance(deployments, list):
+        deployments = []
+
+    print()
+    print("  Azure OpenAI Provider")
+    print("  " + "─" * 40)
+    print()
+    print("  Each Azure OpenAI deployment has its own API key, endpoint,")
+    print("  and deployment name.  You can configure multiple deployments")
+    print("  in ~/.hermes/config.yaml under azure_openai.deployments.")
+    print()
+
+    choices = []
+    if deployments:
+        print("  Configured deployments:")
+        for i, dep in enumerate(deployments):
+            label = dep.get("label") or dep.get("deployment_name", "")
+            endpoint = dep.get("endpoint", "")
+            print(f"    [{i + 1}] {label}  ({endpoint})")
+        choices = [str(i + 1) for i in range(len(deployments))]
+        print(f"    [{len(deployments) + 1}] Add new deployment")
+        print()
+        choice_prompt = f"  Select deployment [1-{len(deployments) + 1}]: "
+        add_idx = str(len(deployments) + 1)
+    else:
+        print("  No deployments configured yet.  Let's add one.")
+        choices = []
+        add_idx = "1"
+        choice_prompt = ""
+
+    selected_dep = None
+
+    if choices:
+        try:
+            choice = input(choice_prompt).strip()
+        except (KeyboardInterrupt, EOFError):
+            print("  No change.")
+            return
+        if choice in choices:
+            selected_dep = deployments[int(choice) - 1]
+        elif choice == add_idx:
+            selected_dep = None  # will add below
+        else:
+            print("  No change.")
+            return
+
+    if selected_dep is None:
+        # Add a new deployment
+        print()
+        print("  Add new Azure OpenAI deployment")
+        print("  " + "─" * 40)
+        try:
+            dep_name = input("  Deployment name (from Azure portal): ").strip()
+            if not dep_name:
+                print("  No change.")
+                return
+            endpoint = input("  Endpoint URL (e.g. https://my-resource.openai.azure.com): ").strip().rstrip("/")
+            if not endpoint:
+                print("  No change.")
+                return
+            api_version = input("  API version [2024-02-01]: ").strip() or "2024-02-01"
+            import getpass as _gp
+            api_key = _gp.getpass("  API key: ").strip()
+            if not api_key:
+                print("  No change.")
+                return
+            label = input(f"  Display label [{dep_name}]: ").strip() or dep_name
+        except (KeyboardInterrupt, EOFError):
+            print("  No change.")
+            return
+
+        # Store key in .env under a deployment-specific var
+        env_key_name = "AZURE_OPENAI_KEY_" + dep_name.upper().replace("-", "_").replace(" ", "_")
+        save_env_value(env_key_name, api_key)
+
+        new_dep = {
+            "deployment_name": dep_name,
+            "endpoint": endpoint,
+            "api_version": api_version,
+            "api_key_env": env_key_name,
+            "label": label,
+        }
+        deployments.append(new_dep)
+        azure_cfg["deployments"] = deployments
+        cfg["azure_openai"] = azure_cfg
+        save_config(cfg)
+        selected_dep = new_dep
+        print(f"  Deployment '{dep_name}' saved.")
+
+    # Activate the selected deployment
+    dep_name = selected_dep["deployment_name"]
+    endpoint = selected_dep.get("endpoint", "")
+    api_version = selected_dep.get("api_version", "2024-02-01")
+
+    model_section = cfg.get("model")
+    if not isinstance(model_section, dict):
+        model_section = {"default": model_section} if model_section else {}
+    model_section["default"] = dep_name
+    model_section["provider"] = "azure-openai"
+    model_section["base_url"] = endpoint
+    model_section["api_version"] = api_version
+    model_section.pop("api_mode", None)
+    cfg["model"] = model_section
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"  Active deployment: {dep_name}  ({endpoint})")
+    print()
 
 
 def _model_flow_api_key_provider(config, provider_id, current_model=""):

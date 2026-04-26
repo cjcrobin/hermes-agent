@@ -58,6 +58,11 @@ _EXTRA_ENV_KEYS = frozenset({
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD",
     "MATRIX_RECOVERY_KEY",
+    # Azure OpenAI — per-deployment credentials stored in .env
+    "AZURE_OPENAI_API_KEY",
+    "AZURE_OPENAI_ENDPOINT",
+    "AZURE_OPENAI_API_VERSION",
+    "AZURE_OPENAI_DEPLOYMENT_NAME",
 })
 import yaml
 
@@ -848,6 +853,30 @@ DEFAULT_CONFIG = {
         "force_ipv4": False,
     },
 
+    # Azure OpenAI — multi-deployment configuration.
+    # Single-deployment users can use env vars (AZURE_OPENAI_API_KEY,
+    # AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_VERSION, AZURE_OPENAI_DEPLOYMENT_NAME)
+    # without configuring this section.
+    #
+    # Each deployment entry has:
+    #   deployment_name  — the deployment ID in Azure (used as model= in API calls)
+    #   endpoint         — https://<resource>.openai.azure.com
+    #   api_version      — e.g. "2024-02-01"
+    #   api_key_env      — name of the env var in ~/.hermes/.env that holds the key
+    #   label            — optional human-readable label for the /model picker
+    #
+    # Example:
+    #   azure_openai:
+    #     deployments:
+    #       - deployment_name: "gpt-4o-prod"
+    #         endpoint: "https://my-resource.openai.azure.com"
+    #         api_version: "2024-02-01"
+    #         api_key_env: "AZURE_OPENAI_KEY_GPT4O_PROD"
+    #         label: "GPT-4o (Production)"
+    "azure_openai": {
+        "deployments": [],
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 21,
 }
@@ -1204,6 +1233,40 @@ OPTIONAL_ENV_VARS = {
         "description": "AWS named profile for Bedrock authentication (from ~/.aws/credentials)",
         "prompt": "AWS Profile",
         "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    # Azure OpenAI — single-deployment convenience env vars.
+    # Multi-deployment users store credentials in azure_openai.deployments in config.yaml.
+    "AZURE_OPENAI_API_KEY": {
+        "description": "Azure OpenAI API key (single-deployment convenience var; use azure_openai.deployments in config.yaml for multiple deployments)",
+        "prompt": "Azure OpenAI API key",
+        "url": "https://portal.azure.com/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "AZURE_OPENAI_ENDPOINT": {
+        "description": "Azure OpenAI endpoint URL (e.g. https://my-resource.openai.azure.com)",
+        "prompt": "Azure OpenAI endpoint URL",
+        "url": "https://portal.azure.com/",
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "AZURE_OPENAI_API_VERSION": {
+        "description": "Azure OpenAI API version (e.g. 2024-02-01)",
+        "prompt": "Azure OpenAI API version (leave empty for default: 2024-02-01)",
+        "url": "https://learn.microsoft.com/en-us/azure/ai-services/openai/reference",
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "AZURE_OPENAI_DEPLOYMENT_NAME": {
+        "description": "Azure OpenAI deployment name (the model name shown in /model when using env-var mode)",
+        "prompt": "Azure OpenAI deployment name",
+        "url": "https://portal.azure.com/",
         "password": False,
         "category": "provider",
         "advanced": True,

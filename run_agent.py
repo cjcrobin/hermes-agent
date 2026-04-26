@@ -711,6 +711,7 @@ class AIAgent:
         api_key: str = None,
         provider: str = None,
         api_mode: str = None,
+        api_version: str = None,
         acp_command: str = None,
         acp_args: list[str] | None = None,
         command: str = None,
@@ -839,6 +840,7 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
+        self.api_version = (api_version or "").strip()  # e.g. "2024-02-01" for Azure OpenAI
         if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
@@ -1161,6 +1163,8 @@ class AIAgent:
                 client_kwargs = {"api_key": api_key, "base_url": base_url}
                 if _provider_timeout is not None:
                     client_kwargs["timeout"] = _provider_timeout
+                if self.provider == "azure-openai" and self.api_version:
+                    client_kwargs["api_version"] = self.api_version
                 if self.provider == "copilot-acp":
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
@@ -1867,7 +1871,7 @@ class AIAgent:
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.on_session_reset()
     
-    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode='', api_version=''):
         """Switch the model/provider in-place for a live agent.
 
         Called by the /model command handlers (CLI and gateway) after
@@ -1912,6 +1916,8 @@ class AIAgent:
         self.api_mode = api_mode
         if api_key:
             self.api_key = api_key
+        if api_version:
+            self.api_version = api_version
 
         # ── Build new client ──
         if api_mode == "anthropic_messages":
@@ -4487,6 +4493,24 @@ class AIAgent:
             keepalive_http = self._build_keepalive_http_client()
             if keepalive_http is not None:
                 client_kwargs["http_client"] = keepalive_http
+        # Azure OpenAI requires its own SDK client with endpoint + api_version.
+        if self.provider == "azure-openai":
+            from openai import AzureOpenAI as _AzureOpenAI
+            azure_kwargs = {
+                "api_key": client_kwargs.get("api_key", ""),
+                "azure_endpoint": client_kwargs.get("base_url", ""),
+                "api_version": client_kwargs.get("api_version", "2024-02-01"),
+            }
+            if "http_client" in client_kwargs:
+                azure_kwargs["http_client"] = client_kwargs["http_client"]
+            client = _AzureOpenAI(**azure_kwargs)
+            logger.info(
+                "AzureOpenAI client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
+            return client
         client = OpenAI(**client_kwargs)
         logger.info(
             "OpenAI client created (%s, shared=%s) %s",

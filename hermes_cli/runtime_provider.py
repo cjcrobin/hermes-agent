@@ -678,8 +678,20 @@ def resolve_runtime_provider(
     requested: Optional[str] = None,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    model_override: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Resolve runtime provider credentials for agent execution."""
+    """Resolve runtime provider credentials for agent execution.
+
+    Args:
+        requested: Provider name or alias (e.g. "azure-openai", "anthropic").
+        explicit_api_key: API key to use instead of auto-resolution.
+        explicit_base_url: Base URL to use instead of auto-resolution.
+        model_override: For providers whose credentials vary per-model (e.g.
+            Azure OpenAI, where each deployment has its own endpoint and key),
+            pass the target model/deployment name here so the resolver can pick
+            the correct credential set.  When omitted the resolver falls back to
+            the deployment name stored in config.yaml ``model.default``.
+    """
     requested_provider = resolve_requested_provider(requested)
 
     custom_runtime = _resolve_named_custom_runtime(
@@ -955,6 +967,27 @@ def resolve_runtime_provider(
         return runtime
 
     # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
+    # Azure OpenAI is handled before this generic block because it needs its
+    # own credential resolver (multi-deployment config + api_version).
+    if provider == "azure-openai":
+        from hermes_cli.auth import resolve_azure_openai_credentials
+        # model_override wins (e.g. from /model gpt-4-turbo --provider azure),
+        # then fall back to what's stored in config.yaml model.default.
+        deployment_name = (
+            str(model_override or "").strip()
+            or str(model_cfg.get("default") or "").strip()
+        )
+        creds = resolve_azure_openai_credentials(deployment_name)
+        return {
+            "provider": "azure-openai",
+            "api_mode": "chat_completions",
+            "base_url": creds["endpoint"],
+            "api_key": creds["api_key"],
+            "api_version": creds["api_version"],
+            "source": creds["source"],
+            "requested_provider": requested_provider,
+        }
+
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)

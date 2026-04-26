@@ -82,6 +82,9 @@ _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
 _AUTHORITATIVE_NATIVE_PROVIDERS: frozenset[str] = frozenset({
     "gemini",
     "huggingface",
+    # Azure OpenAI uses deployment names as model identifiers.  These are
+    # user-defined strings (e.g. "gpt-4o-prod") that must never be transformed.
+    "azure-openai",
 })
 
 # Direct providers that accept bare native names but should repair a matching

@@ -157,6 +157,14 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="OLLAMA_BASE_URL",
     ),
+    # Azure OpenAI — uses the standard openai_chat transport with AzureOpenAI
+    # client (instantiated in run_agent.py).  The endpoint is read from
+    # AZURE_OPENAI_ENDPOINT env var or azure_openai.deployments in config.yaml.
+    "azure-openai": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("AZURE_OPENAI_API_KEY",),
+        base_url_env_var="AZURE_OPENAI_ENDPOINT",
+    ),
 }
 
 
@@ -270,6 +278,11 @@ ALIASES: Dict[str, str] = {
     "amazon-bedrock": "bedrock",
     "amazon": "bedrock",
 
+    # azure-openai
+    "azure": "azure-openai",
+    "azure_openai": "azure-openai",
+    "aoai": "azure-openai",
+
     # arcee
     "arcee-ai": "arcee",
     "arceeai": "arcee",
@@ -298,6 +311,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
+    "azure-openai": "Azure OpenAI",
 }
 
 

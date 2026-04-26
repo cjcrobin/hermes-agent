@@ -234,6 +234,7 @@ class ModelSwitchResult:
     api_key: str = ""
     base_url: str = ""
     api_mode: str = ""
+    api_version: str = ""
     error_message: str = ""
     warning_message: str = ""
     provider_label: str = ""
@@ -241,6 +242,9 @@ class ModelSwitchResult:
     capabilities: Optional[ModelCapabilities] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
+    # Azure OpenAI: the actual model behind the deployment (e.g. "gpt-4o").
+    # Empty when not Azure or when the REST query fails/is unavailable.
+    azure_real_model: str = ""
 
 
 @dataclass
@@ -504,6 +508,43 @@ def switch_model(
 
         # If no model specified, try auto-detect from endpoint
         if not new_model:
+            # Azure OpenAI: list configured deployments for the user to pick from
+            if target_provider == "azure-openai":
+                from hermes_cli.config import load_config
+                try:
+                    _cfg = load_config()
+                    _deps = _cfg.get("azure_openai", {}).get("deployments", [])
+                except Exception:
+                    _deps = []
+                if _deps:
+                    # Return a special error message that lists the deployments.
+                    _dep_lines = "\n".join(
+                        f"  /model {d.get('deployment_name', '?')} --provider azure"
+                        + (f"  # {d.get('label', '')}" if d.get("label") and d.get("label") != d.get("deployment_name") else "")
+                        for d in _deps
+                    )
+                    return ModelSwitchResult(
+                        success=False,
+                        target_provider=target_provider,
+                        provider_label="Azure OpenAI",
+                        is_global=is_global,
+                        error_message=(
+                            f"Azure OpenAI: specify a deployment name.\n"
+                            f"Configured deployments:\n{_dep_lines}"
+                        ),
+                    )
+                else:
+                    return ModelSwitchResult(
+                        success=False,
+                        target_provider=target_provider,
+                        provider_label="Azure OpenAI",
+                        is_global=is_global,
+                        error_message=(
+                            "Azure OpenAI: no deployments configured. "
+                            "Run 'hermes model' to add a deployment, or specify one: "
+                            "/model <deployment-name> --provider azure"
+                        ),
+                    )
             if pdef.base_url:
                 from hermes_cli.runtime_provider import _auto_detect_local_model
                 detected = _auto_detect_local_model(pdef.base_url)
@@ -645,13 +686,20 @@ def switch_model(
     api_key = current_api_key
     base_url = current_base_url
     api_mode = ""
+    api_version = ""
 
     if provider_changed or explicit_provider:
         try:
-            runtime = resolve_runtime_provider(requested=target_provider)
+            # For Azure OpenAI, pass the new deployment name so the resolver
+            # picks the correct per-deployment credentials (endpoint + key).
+            _rtp_kwargs: dict = {"requested": target_provider}
+            if target_provider == "azure-openai" and new_model:
+                _rtp_kwargs["model_override"] = new_model
+            runtime = resolve_runtime_provider(**_rtp_kwargs)
             api_key = runtime.get("api_key", "")
             base_url = runtime.get("base_url", "")
             api_mode = runtime.get("api_mode", "")
+            api_version = runtime.get("api_version", "")
         except Exception as e:
             return ModelSwitchResult(
                 success=False,
@@ -757,6 +805,24 @@ def switch_model(
     if hermes_warn:
         warnings.append(hermes_warn)
 
+    # --- Azure OpenAI: enrich with real model name behind the deployment ---
+    # The deployment name (e.g. "gpt-4o-prod") is what gets sent to the API as
+    # model=, but we can query the Azure REST API to find the actual model it
+    # runs (e.g. "gpt-4o").  This is done once per deployment and cached in
+    # config.yaml so subsequent calls are instant.
+    azure_real_model = ""
+    if target_provider == "azure-openai" and new_model:
+        try:
+            from hermes_cli.auth import get_azure_deployment_model_cached
+            azure_real_model = get_azure_deployment_model_cached(
+                deployment_name=new_model,
+                endpoint=base_url,
+                api_key=api_key,
+                api_version=api_version or "2024-02-01",
+            )
+        except Exception:
+            azure_real_model = ""
+
     # --- Build result ---
     return ModelSwitchResult(
         success=True,
@@ -766,12 +832,14 @@ def switch_model(
         api_key=api_key,
         base_url=base_url,
         api_mode=api_mode,
+        api_version=api_version,
         warning_message=" | ".join(warnings) if warnings else "",
         provider_label=provider_label,
         resolved_via_alias=resolved_alias,
         capabilities=capabilities,
         model_info=model_info,
         is_global=is_global,
+        azure_real_model=azure_real_model,
     )
 
 
@@ -979,6 +1047,8 @@ def list_authenticated_providers(
     # Catches providers that are in CANONICAL_PROVIDERS but weren't found
     # in PROVIDER_TO_MODELS_DEV or HERMES_OVERLAYS (keeps /model in sync
     # with `hermes model`).
+    # Special case: azure-openai is handled separately below (step 2c)
+    # because its "models" are user-configured deployments, not a static list.
     try:
         from hermes_cli.models import CANONICAL_PROVIDERS as _canon_provs
     except ImportError:
@@ -986,6 +1056,9 @@ def list_authenticated_providers(
 
     for _cp in _canon_provs:
         if _cp.slug.lower() in seen_slugs:
+            continue
+        # Azure OpenAI is handled in step 2c below
+        if _cp.slug == "azure-openai":
             continue
 
         # Check credentials via PROVIDER_REGISTRY (auth.py)
@@ -1033,6 +1106,55 @@ def list_authenticated_providers(
             "source": "canonical",
         })
         seen_slugs.add(_cp.slug.lower())
+
+    # --- 2c. Azure OpenAI — show deployments from config.yaml ---
+    # Unlike other providers that have a static model catalog, Azure OpenAI
+    # "models" are user-configured deployments.  We read them from config.yaml
+    # and build display strings of the form "model (deployment_name)" when the
+    # underlying model is known, or just "deployment_name" otherwise.
+    if "azure-openai" not in seen_slugs:
+        _az_has_creds = bool(
+            os.environ.get("AZURE_OPENAI_API_KEY") or os.environ.get("AZURE_OPENAI_ENDPOINT")
+        )
+        if not _az_has_creds:
+            # Check config.yaml for deployments with keys
+            try:
+                from hermes_cli.config import load_config as _lcfg
+                _az_cfg = _lcfg()
+                _az_deps = _az_cfg.get("azure_openai", {}).get("deployments", [])
+                if _az_deps:
+                    _az_has_creds = True
+            except Exception:
+                _az_deps = []
+        else:
+            try:
+                from hermes_cli.config import load_config as _lcfg
+                _az_deps = _lcfg().get("azure_openai", {}).get("deployments", [])
+            except Exception:
+                _az_deps = []
+
+        if _az_has_creds:
+            # Build model display strings: "gpt-4o (gpt-4o-prod)" or just "gpt-4o-prod"
+            _az_models = []
+            for _dep in _az_deps:
+                _dep_name = _dep.get("deployment_name", "")
+                if not _dep_name:
+                    continue
+                _dep_model = (_dep.get("model") or "").strip()
+                if _dep_model and _dep_model != _dep_name:
+                    _az_models.append(f"{_dep_model} (deployment: {_dep_name})")
+                else:
+                    _az_models.append(_dep_name)
+            results.append({
+                "slug": "azure-openai",
+                "name": "Azure OpenAI",
+                "is_current": current_provider in ("azure-openai", "azure"),
+                "is_user_defined": False,
+                "models": _az_models[:max_models],
+                "total_models": len(_az_models),
+                "source": "hermes",
+            })
+            seen_slugs.add("azure-openai")
 
     # --- 3. User-defined endpoints from config ---
     # Track (name, base_url) of what section 3 emits so section 4 can skip

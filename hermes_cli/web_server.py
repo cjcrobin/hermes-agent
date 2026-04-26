@@ -234,6 +234,9 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "human_delay": "display",
     "dashboard": "display",
     "code_execution": "agent",
+    # azure_openai only has one leaf (deployments list) — merge into general
+    # so it doesn't create a single-field tab in the web UI.
+    "azure_openai": "general",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.

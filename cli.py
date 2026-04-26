@@ -3043,6 +3043,7 @@ class HermesCLI:
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
+        self.api_version = runtime.get("api_version") or getattr(self, "api_version", "")
 
         # When a custom_provider entry carries an explicit `model` field,
         # use it as the effective model name.  Without this, running
@@ -3191,6 +3192,7 @@ class HermesCLI:
                 "base_url": self.base_url,
                 "provider": self.provider,
                 "api_mode": self.api_mode,
+                "api_version": getattr(self, "api_version", ""),
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
@@ -3202,6 +3204,7 @@ class HermesCLI:
                 base_url=runtime.get("base_url"),
                 provider=runtime.get("provider"),
                 api_mode=runtime.get("api_mode"),
+                api_version=runtime.get("api_version") or "",
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
@@ -4951,6 +4954,8 @@ class HermesCLI:
             self._explicit_base_url = result.base_url
         if result.api_mode:
             self.api_mode = result.api_mode
+        if getattr(result, "api_version", ""):
+            self.api_version = result.api_version
 
         if self.agent is not None:
             try:
@@ -4960,6 +4965,7 @@ class HermesCLI:
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    api_version=getattr(result, "api_version", "") or "",
                 )
             except Exception as exc:
                 _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
@@ -4971,7 +4977,14 @@ class HermesCLI:
         )
 
         provider_label = result.provider_label or result.target_provider
-        _cprint(f"  ✓ Model switched: {result.new_model}")
+        # For Azure deployments, show "gpt-4o (deployment: gpt-4o-prod)" when
+        # we know the underlying model, or just the deployment name otherwise.
+        _azure_real = getattr(result, "azure_real_model", "") or ""
+        if result.target_provider == "azure-openai" and _azure_real and _azure_real != result.new_model:
+            _model_display = f"{_azure_real} (deployment: {result.new_model})"
+        else:
+            _model_display = result.new_model
+        _cprint(f"  ✓ Model switched: {_model_display}")
         _cprint(f"    Provider: {provider_label}")
 
         mi = result.model_info
@@ -5181,6 +5194,7 @@ class HermesCLI:
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    api_version=getattr(result, "api_version", "") or "",
                 )
             except Exception as exc:
                 _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
@@ -5196,7 +5210,14 @@ class HermesCLI:
 
         # Display confirmation with full metadata
         provider_label = result.provider_label or result.target_provider
-        _cprint(f"  ✓ Model switched: {result.new_model}")
+        # For Azure deployments, show "gpt-4o (deployment: gpt-4o-prod)" when
+        # we know the underlying model, or just the deployment name otherwise.
+        _azure_real = getattr(result, "azure_real_model", "") or ""
+        if result.target_provider == "azure-openai" and _azure_real and _azure_real != result.new_model:
+            _model_display = f"{_azure_real} (deployment: {result.new_model})"
+        else:
+            _model_display = result.new_model
+        _cprint(f"  ✓ Model switched: {_model_display}")
         _cprint(f"    Provider: {provider_label}")
 
         # Rich metadata from models.dev
